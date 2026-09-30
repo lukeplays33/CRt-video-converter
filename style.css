@@ -1,0 +1,60 @@
+html,
+body {
+    margin: 0;
+    background-color: #0d0d0d;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+
+    margin: 0px;
+    padding: 0px;
+}
+
+#crt-container {
+    overflow: hidden;
+    background: #000;
+    border-radius: 30% / 20%;
+    box-shadow: inset 0 0 0 3px rgba(0,0,0,0.9), inset 0 0 18px rgba(255,255,255,0.03);
+}
+
+canvas {
+    display: block;
+    border-radius: inherit;
+}
+
+#videoConverter,
+#renderer1 {
+    display: none;
+}
+
+#controlBar {
+    position:fixed;
+    top:8px;
+    left:8px;
+
+    display:flex;
+
+    flex-direction:column;
+
+    color:white;
+}
+
+#crt-canvas {
+    width: 100%;
+    max-width: 100%;
+    aspect-ratio: 4 / 3;
+    object-fit: contain;
+    background-color: #000;
+    margin: 0 auto;
+    display: block;
+}
+
+/* Fullscreen letterboxing */
+#crt-canvas:fullscreen {
+    width: auto !important;
+    height: 100vh !important;
+    aspect-ratio: 4 / 3;
+    object-fit: contain;
+    background-color: #000;
+}

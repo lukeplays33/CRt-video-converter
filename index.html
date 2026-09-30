@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebGL CRT Simulator</title>
+    <link rel="stylesheet" href="./style.css">
+</head>
+
+<body>
+
+    <div id="controlBar">
+        <button id="fullscreen">Toggle Fullscreen</button>
+
+        <input type='file' id='fileUpload'>
+
+        <p id="curvature_p"> Screen Curvature</p>
+        <input id="curvature_range" type="range" min="0" max="1" step="0.01" value="0.5">
+    </div>
+
+    <video src='' id='videoConverter'></video>
+
+    <div id="crt-container">
+        <canvas id="crt-canvas"></canvas>
+    </div>
+
+    <script type="module" src="/main.js"></script>
+</body>
+
+</html>
