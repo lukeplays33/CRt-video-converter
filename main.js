@@ -25,24 +25,24 @@ uniform vec2 uResolution;
 vec2 curveUV(vec2 uv) {
     if (uCurvature <= 0.0) return uv;
 
-    // Center the UVs around the screen so the warp is based on distance from the center.
     vec2 p = uv - 0.5;
-
-    // Correct for 4:3 aspect before applying the radial warp.
     p.x *= 4.0 / 3.0;
 
-    // Classic CRT tube curvature: strong barrel warp that pushes the edges inward.
-    float radiusSquared = dot(p, p);
-    float warp = 1.0 + uCurvature * 7.0 * radiusSquared;
-    p *= warp;
+    float r2 = dot(p, p);
+    float r = sqrt(r2);
 
-    // Keep the screen from ballooning while the tube bends in a chunky, old-school way.
-    float sizeCompensation = 1.0 / (1.0 + uCurvature * 0.12);
-    p *= sizeCompensation;
+    // Simulate a spherical bulb: the center sits closest to the viewer,
+    // while the edges are pushed back into the tube.
+    float bulbDepth = 1.0 - r * 1.25;
+    float bulbWarp = 1.0 + uCurvature * 9.0 * r2;
 
-    // Undo the aspect correction to keep the screen physically proportioned.
+    p *= bulbWarp;
+    p *= 1.0 + uCurvature * 0.5 * bulbDepth;
+
+    // Anti-bulge compensation keeps the screen from looking like a fisheye.
+    p *= 1.0 / (1.0 + uCurvature * 0.25);
+
     p.x /= 4.0 / 3.0;
-
     return p + 0.5;
 }
 
@@ -56,6 +56,11 @@ void main(void) {
     }
 
     vec3 color = texture2D(uSampler, uv).rgb;
+
+    // Bulb-style depth: the center is brighter/closer, the edges deepen and darken.
+    vec2 centerVec = uv - vec2(0.5);
+    float bulbDepth = 1.0 - clamp(length(centerVec) * 1.6, 0.0, 1.0);
+    color *= mix(0.72, 1.18, bulbDepth);
 
     // Heavy old-school corner falloff for a CRT tube edge.
     vec2 vUV = uv * (1.0 - uv.yx);
