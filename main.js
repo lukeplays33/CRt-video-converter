@@ -10,8 +10,9 @@ const crt_container = document.getElementById('crt-container');
 const offscreenCanvas = document.createElement('canvas');
 const offscreenCtx = offscreenCanvas.getContext('2d');
 
-const curvature_p = document.getElementById('curvature_p');
 const curvature_range = document.getElementById('curvature_range');
+
+const zoom_range = document.getElementById('zoom_range');
 
 const crtFragmentShader = `
 precision mediump float;
@@ -76,6 +77,8 @@ function setShaders() {
         // Dynamically updates GPU uniform without re-compiling the shader
         crtShader.uniforms.uCurvature = parseFloat(curvature_range.value);
     }
+
+    canvasElement.style.scale = 1 + Number(zoom_range.value);
 }
 
 let targetFPS = 25;
@@ -239,7 +242,13 @@ curvature_range.onchange = function (e) {
     setShaders();
 }
 
+zoom_range.onchange = function (e) {
+    window.localStorage.setItem('zoom_range', e.target.value);
+    setShaders();
+}
+
 window.onload = function () {
     curvature_range.value = window.localStorage.getItem('curvature_range');
+    zoom_range.value = window.localStorage.getItem('zoom_range');
     setShaders();
 }
