@@ -1,17 +1,20 @@
 import * as PIXI from 'pixi.js';
 
-const fullscreenBtn = document.getElementById('fullscreen'); // Update to your button ID
+import { VideoAudioEncoder } from './js/converters/videoAudioEncoder.js';
+import { CRTDecoderRenderer } from './js/converters/CRT_decoder_renderer.js';
 
+const fullscreenBtn = document.getElementById('fullscreen');
 const fileUpload = document.getElementById('fileUpload');
 const videoConverter = document.getElementById('videoConverter');
 const canvasElement = document.getElementById('crt-canvas');
 const crt_container = document.getElementById('crt-container');
 
 const offscreenCanvas = document.createElement('canvas');
-const offscreenCtx = offscreenCanvas.getContext('2d');
+// Set standard 4:3 offscreen baseline
+offscreenCanvas.width = 760;
+offscreenCanvas.height = 570;
 
 const curvature_range = document.getElementById('curvature_range');
-
 const zoom_range = document.getElementById('zoom_range');
 
 const crtFragmentShader = `
@@ -26,30 +29,28 @@ vec2 curveUV(vec2 uv) {
     if (uCurvature <= 0.0) return uv;
 
     vec2 p = uv - 0.5;
-    p.x *= 4.0 / 3.0;
+
+    // Use dynamic resolution uniform to prevent aspect ratio distortion
+    float aspect = uResolution.x / uResolution.y;
+    p.x *= aspect;
 
     float r2 = dot(p, p);
     float r = sqrt(r2);
 
-    // Simulate a spherical bulb: the center sits closest to the viewer,
-    // while the edges are pushed back into the tube.
     float bulbDepth = 1.0 - r * 1.25;
     float bulbWarp = 1.0 + uCurvature * 9.0 * r2;
 
     p *= bulbWarp;
     p *= 1.0 + uCurvature * 0.5 * bulbDepth;
-
-    // Anti-bulge compensation keeps the screen from looking like a fisheye.
     p *= 1.0 / (1.0 + uCurvature * 0.25);
 
-    p.x /= 4.0 / 3.0;
+    p.x /= aspect;
     return p + 0.5;
 }
 
 void main(void) {
     vec2 uv = curveUV(vTextureCoord);
 
-    // Clip pixels outside the curved glass frame (renders as the black bezel)
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
@@ -57,18 +58,15 @@ void main(void) {
 
     vec3 color = texture2D(uSampler, uv).rgb;
 
-    // Bulb-style depth: the center is brighter/closer, the edges deepen and darken.
     vec2 centerVec = uv - vec2(0.5);
     float bulbDepth = 1.0 - clamp(length(centerVec) * 1.6, 0.0, 1.0);
     color *= mix(0.72, 1.18, bulbDepth);
 
-    // Heavy old-school corner falloff for a CRT tube edge.
     vec2 vUV = uv * (1.0 - uv.yx);
     float vignette = vUV.x * vUV.y * 28.0;
     vignette = clamp(pow(vignette, 0.45), 0.0, 1.0);
     color *= vignette;
 
-    // Soft reflective glow, but keep it subtle and vintage instead of modern glossy.
     vec2 glareUV = vTextureCoord - vec2(0.5, 0.2);
     float glare = max(0.0, 1.0 - length(glareUV) * 2.2);
     color += vec3(0.04) * pow(glare, 2.0);
@@ -76,24 +74,6 @@ void main(void) {
     gl_FragColor = vec4(color, 1.0);
 }
 `;
-
-function setShaders() {
-        if (crtShader) {
-        // Dynamically updates GPU uniform without re-compiling the shader
-        crtShader.uniforms.uCurvature = parseFloat(curvature_range.value);
-    }
-
-    canvasElement.style.scale = 1 + Number(zoom_range.value);
-}
-
-let targetFPS = 25;
-let interval = 1000 / targetFPS;
-
-let app;
-let sprite;
-let baseTexture;
-let texture;
-let crtShader;
 
 const crtVertexShader = `
     attribute vec2 aVertexPosition;
@@ -107,7 +87,22 @@ const crtVertexShader = `
     }
 `;
 
+let targetFPS = 25;
+let app;
+let sprite;
+let baseTexture;
+let texture;
+let crtShader;
+let decoderInstance = null;
 
+function setShaders() {
+    if (crtShader && curvature_range) {
+        crtShader.uniforms.uCurvature = parseFloat(curvature_range.value || 0.5);
+    }
+    if (canvasElement && zoom_range) {
+        canvasElement.style.transform = `scale(${1 + Number(zoom_range.value || 0)})`;
+    }
+}
 
 async function initCRT() {
     app = new PIXI.Application({
@@ -126,7 +121,7 @@ async function initCRT() {
         uTime: 0,
         uTargetFPS: targetFPS,
         uResolution: [800, 600],
-        uCurvature: 0.5 // Default slider value
+        uCurvature: curvature_range ? parseFloat(curvature_range.value || 0.5) : 0.5
     });
 
     sprite = new PIXI.Sprite(texture);
@@ -138,82 +133,103 @@ async function initCRT() {
     app.ticker.add(() => {
         const currentTime = (performance.now() - startTime) / 1000.0;
         crtShader.uniforms.uTime = currentTime;
+
+        if (baseTexture) {
+            baseTexture.update();
+        }
     });
 
-    setInterval(() => {
-        if (!videoConverter.paused && !videoConverter.ended && videoConverter.readyState >= 2) {
-            captureAndPushFrame();
-        }
-    }, interval);
+    handle43Resize();
 }
 
-function captureAndPushFrame() {
-    if (!offscreenCanvas.width || !offscreenCanvas.height) return;
+function syncCRTTextureToCanvas() {
+    if (!baseTexture || !offscreenCanvas) return;
 
-    offscreenCtx.drawImage(videoConverter, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
-    baseTexture.update();
+    baseTexture.setSize(offscreenCanvas.width, offscreenCanvas.height);
 
-    sprite.width = app.screen.width;
-    sprite.height = app.screen.height;
-}
-
-window.setVideoFPS = function (newFPS) {
-    targetFPS = newFPS;
-    interval = 1000 / targetFPS;
-    if (crtShader) {
-        crtShader.uniforms.uTargetFPS = newFPS;
+    if (texture) {
+        // Reset texture frame boundaries to match offscreen canvas dimensions
+        texture.frame = new PIXI.Rectangle(0, 0, offscreenCanvas.width, offscreenCanvas.height);
     }
-};
+}
 
-fileUpload.addEventListener("change", function () {
-    const file = this.files[0];
+fileUpload.addEventListener("change", async function (e) {
+    const file = e.target.files[0];
     if (!file) return;
 
     videoConverter.src = URL.createObjectURL(file);
+    videoConverter.muted = true;
+    videoConverter.playsInline = true;
+    videoConverter.preload = 'auto';
+    videoConverter.load();
 
-    videoConverter.addEventListener("loadedmetadata", () => {
-        // Force offscreen buffer to maintain a 4:3 ratio based on video height
-        const targetHeight = videoConverter.videoHeight || 600;
-        const targetWidth = Math.floor(targetHeight * (4 / 3));
+    videoConverter.addEventListener("loadedmetadata", async () => {
+        const targetHeight = 570;
+        const targetWidth = Math.floor(targetHeight * (4 / 3)); // 760x570 (4:3)
 
         offscreenCanvas.width = targetWidth;
         offscreenCanvas.height = targetHeight;
 
-        if (baseTexture) {
-            baseTexture.setSize(targetWidth, targetHeight);
+        syncCRTTextureToCanvas();
+        handle43Resize();
+
+        try {
+            await videoConverter.play();
+        } catch (error) {
+            console.warn('Autoplay muted retry:', error);
+            videoConverter.muted = true;
+            try {
+                await videoConverter.play();
+            } catch (retryError) {
+                console.error('Video playback failed:', retryError);
+            }
         }
 
-        handle43Resize();
-        videoConverter.play();
+        try {
+            console.log('[CRT] starting video conversion pipeline');
+            const sample_rate = 96000;
+            const encoder = new VideoAudioEncoder(sample_rate, 60, targetHeight);
+            const { audioBuffer, audioCtx, sampleRate, targetFps, frameWidth, frameHeight, totalFrames } = await encoder.encodeVideoFile(file);
+
+            console.log('[CRT] decoded audio buffer ready, starting CRT renderer');
+
+            if (decoderInstance && decoderInstance.stop) {
+                decoderInstance.stop();
+            }
+
+            decoderInstance = new CRTDecoderRenderer(offscreenCanvas);
+            decoderInstance.startDecoding(audioBuffer, audioCtx, {
+                sampleRate,
+                targetFps,
+                frameWidth,
+                frameHeight,
+                totalFrames,
+                onFrame: () => {
+                    syncCRTTextureToCanvas();
+                    if (baseTexture) {
+                        baseTexture.update();
+                    }
+                    if (app && app.render) app.render();
+                }
+            });
+
+            window.__crtTarget = offscreenCanvas;
+        } catch (error) {
+            console.error('Video conversion failed:', error);
+            if (window.alert) {
+                window.alert('The selected video could not be converted into CRT audio. Please try another file.');
+            }
+        }
     }, { once: true });
 });
 
-initCRT().catch(console.error);
-
-function get43Dimensions(containerWidth, containerHeight) {
-    const targetAspect = 4 / 3;
-    let width = containerWidth;
-    let height = containerWidth / targetAspect;
-
-    if (height > containerHeight) {
-        height = containerHeight;
-        width = containerHeight * targetAspect;
-    }
-
-    return { width: Math.floor(width), height: Math.floor(height) };
-}
-
 function handle43Resize() {
-    if (!app || !crtShader) return;
+    if (!app || !crtShader || !crt_container) return;
 
-    // Get max available bounds
-    const parentWidth = document.fullscreenElement ? window.innerWidth : (canvasElement.parentElement.clientWidth || window.innerWidth);
-    const parentHeight = document.fullscreenElement ? window.innerHeight : (window.innerHeight * 0.8);
+    const rect = crt_container.getBoundingClientRect();
+    const width = Math.floor(rect.width);
+    const height = Math.floor(rect.height);
 
-    // Calculate clamped 4:3 dimensions
-    const { width, height } = get43Dimensions(parentWidth, parentHeight);
-
-    // Resize PixiJS renderer & viewport
     app.renderer.resize(width, height);
 
     if (sprite) {
@@ -221,20 +237,18 @@ function handle43Resize() {
         sprite.height = height;
     }
 
-    // Pass exact 4:3 resolution to GLSL uniform for accurate scanline scaling
     crtShader.uniforms.uResolution = [width, height];
 }
 
-// Attach event listeners
+// Window & Input Event Listeners
 window.addEventListener('resize', handle43Resize);
 document.addEventListener('fullscreenchange', handle43Resize);
 
-// Fullscreen Button Event
 if (fullscreenBtn) {
     fullscreenBtn.addEventListener('click', () => {
         if (!document.fullscreenElement) {
             canvasElement.requestFullscreen().catch(err => {
-                console.error(`Error attempting to enable fullscreen: ${err.message}`);
+                console.error(`Error enabling fullscreen: ${err.message}`);
             });
         } else {
             document.exitFullscreen();
@@ -242,18 +256,26 @@ if (fullscreenBtn) {
     });
 }
 
-curvature_range.onchange = function (e) {
-    window.localStorage.setItem('curvature_range', e.target.value);
-    setShaders();
+if (curvature_range) {
+    curvature_range.addEventListener('input', (e) => {
+        window.localStorage.setItem('curvature_range', e.target.value);
+        setShaders();
+    });
 }
 
-zoom_range.onchange = function (e) {
-    window.localStorage.setItem('zoom_range', e.target.value);
-    setShaders();
+if (zoom_range) {
+    zoom_range.addEventListener('input', (e) => {
+        window.localStorage.setItem('zoom_range', e.target.value);
+        setShaders();
+    });
 }
 
-window.onload = function () {
-    curvature_range.value = window.localStorage.getItem('curvature_range');
-    zoom_range.value = window.localStorage.getItem('zoom_range');
-    setShaders();
-}
+window.addEventListener('DOMContentLoaded', () => {
+    if (curvature_range && window.localStorage.getItem('curvature_range')) {
+        curvature_range.value = window.localStorage.getItem('curvature_range');
+    }
+    if (zoom_range && window.localStorage.getItem('zoom_range')) {
+        zoom_range.value = window.localStorage.getItem('zoom_range');
+    }
+    initCRT().then(() => setShaders()).catch(console.error);
+});
